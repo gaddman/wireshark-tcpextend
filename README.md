@@ -3,11 +3,12 @@ A Wireshark LUA script to display some additional TCP information.
 
 This is a post-dissector script which adds a new tree to the Wireshark view, _TCP extended info_.
 
-All statistics are referenced to the sending node, and displayed on both sent and received packets.
+All statistics, except delta, are referenced to the sending node, and displayed on both sent and received packets.
 * **bsp**: bytes sent since the last push flag.
 * **bif**: bytes in flight. This will normally equal the built-in `tcp.analysis.bytes_in_flight`, however it is also displayed on the ACK packets.
 * **max_tx**: maximum size packet the server can send, equal to the client's receive window minus the server's bytes in flight.
 * **pba**: number of packets between this ACK and the packet it ACKs (equal to the builtin `frame.number` minus `tcp.analysis.acks_frame`). TODO: this should be count of how many data packets were received, it is currently everything, even non-TCP.
+* **delta**: time since the previous packet was transmitted. Unlike the builtin time delta which is relative to the previous displayed packet, this is relative to the previous packet from the matching sender.
 
 ## Usage:
 Copy to your Wireshark plugins folder, on Windows 8 and later this is `C:\Users\<username>\AppData\Roaming\Wireshark\plugins`. You may need to create the folder first.
