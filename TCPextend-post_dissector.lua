@@ -1,16 +1,19 @@
--- Wireshark post-dissector to calculate some additional TCP information
+-- A Wireshark LUA script to display some additional TCP information.
+-- This is a post-dissector script which adds a new tree to the Wireshark view, _TCP extended info_.
 --
--- All statistics are referenced to a single node, usually the sender, and displayed on both sent and received packets.
+-- All statistics, except delta, are referenced to a single node, usually the sender, and displayed on both sent and received packets.
 -- bif:		bytes in flight. This will normally equal the built-in tcp.analysis.bytes_in_flight, however it is 
 --			also displayed on the ACK packets.
 -- max_tx:	maximum size packet the server can send, equal to the client's receive window minus the server's bytes in flight.
 -- bsp:		bytes sent since the last push flag.
 -- pba:		number of packets between this ACK and the packet it ACKs (equal to the builtin frame.number minus tcp.analysis.acks_frame)
 --			TODO: this should be count of how many data packets were received, it is currently everything, even non-TCP.
+-- delta:	time since the previous packet was transmitted. Unlike the builtin time delta which is relative to the previous displayed packet,
+--			this is relative to the previous packet from the matching sender.
 --
 -- Chris Gadd
 -- https://github.com/gaddman/wireshark-tcpextend
--- v0.4-20150614
+-- v0.5-20150618
 --
 -- Known limitiations:
 -- Any TCP errors (eg retransmissions, OOO) are not correctly handled
@@ -34,14 +37,17 @@ local bif_F = ProtoField.int32("TCPextend.bif","Bytes in Flight")
 local max_tx_F = ProtoField.int32("TCPextend.max_tx","Max tx bytes")
 local bsp_F = ProtoField.int32("TCPextend.bsp","Bytes since PSH")
 local pba_F = ProtoField.int32("TCPextend.pba","Packets before ACK")
+local delta_F = ProtoField.relative_time("TCPextend.delta","Time delta")
 -- add the fields to the protocol
-TCPextend_proto.fields = {bif_F, max_tx_F, bsp_F, pba_F}
+TCPextend_proto.fields = {bif_F, max_tx_F, bsp_F, pba_F, delta_F}
 -- register protocol as a postdissector
 register_postdissector(TCPextend_proto)
 
 -- variables to persist across all packets
 local tcpextend_stats = {}
 -- per stream
+tcpextend_stats.client_time = {}
+tcpextend_stats.server_time = {}
 tcpextend_stats.client_port = {}
 tcpextend_stats.server_port = {}
 tcpextend_stats.client_win = {}
@@ -57,6 +63,7 @@ tcpextend_stats.bif = {}
 tcpextend_stats.bsp = {}
 tcpextend_stats.txb = {}
 tcpextend_stats.pba = {}
+tcpextend_stats.delta = {}
    
 -- function to "postdissect" each frame
 function TCPextend_proto.dissector(extend,pinfo,tree)
@@ -65,6 +72,7 @@ function TCPextend_proto.dissector(extend,pinfo,tree)
 	if tcp_len then    -- seems like it should filter out TCP traffic. Maybe there's a way like taps to register the dissector with a filter?
 		tcp_len = tcp_len.value
 		local pkt_no = tostring(pinfo.number) -- warning, this will become a large array (of 32bit integers) if lots of packets
+		local frame_time = pinfo.rel_ts
 		local tcp_stream = tcp_stream_f().value
 		local tcp_ack = tcp_ack_f().value
 		local tcp_push = tcp_push_f().value
@@ -87,6 +95,8 @@ function TCPextend_proto.dissector(extend,pinfo,tree)
 				tcpextend_stats.server_ack[tcp_stream] = 0
 				tcpextend_stats.client_len[tcp_stream] = 0
 				tcpextend_stats.server_len[tcp_stream] = 0
+				tcpextend_stats.client_time[tcp_stream] = 0
+				tcpextend_stats.server_time[tcp_stream] = 0
 			end
 			-- declare variables local to this packet
 			local cbsp = 0
@@ -95,10 +105,16 @@ function TCPextend_proto.dissector(extend,pinfo,tree)
 			local sbif = 0
 			local ctxb = 0
 			local stxb = 0
+			local cdelta = 0
+			local sdelta = 0
 			
 			-- calculate depending on which direction this packet is going
 			if tcp_srcport == tcpextend_stats.server_port[tcp_stream] then
 				-- from server
+				-- calculate time since last packet from this endpoint, and store as NStime (seconds,nanoseconds)
+				sdelta = frame_time - tcpextend_stats.server_time[tcp_stream]
+				local secs, frac = math.modf(sdelta)
+				tcpextend_stats.delta[pkt_no] = NSTime(secs, math.modf(frac * 10^9))
 				-- set current, and then calculate new bytes since last push
 				sbsp = tcpextend_stats.server_bsp[tcp_stream] + tcp_len
 				cbsp = tcpextend_stats.client_bsp[tcp_stream]
@@ -111,11 +127,16 @@ function TCPextend_proto.dissector(extend,pinfo,tree)
 				stxb = tcpextend_stats.client_win[tcp_stream] - (tcpextend_stats.server_len[tcp_stream] - tcpextend_stats.client_ack[tcp_stream] + 1)
 				ctxb = tcpextend_stats.server_win[tcp_stream] - (tcpextend_stats.client_len[tcp_stream] - tcpextend_stats.server_ack[tcp_stream] + 1)
 				-- set/calculate new persistent values
+				tcpextend_stats.server_time[tcp_stream] = frame_time
 				tcpextend_stats.server_len[tcp_stream] = tcpextend_stats.server_len[tcp_stream] + tcp_len
 				tcpextend_stats.server_ack[tcp_stream] = tcp_ack
 				tcpextend_stats.server_win[tcp_stream] = tcp_win
 			elseif tcp_srcport == tcpextend_stats.client_port[tcp_stream] then
 				-- from client
+				-- calculate time since last packet from this endpoint, and store as NStime (seconds,nanoseconds)
+				cdelta = frame_time - tcpextend_stats.client_time[tcp_stream]
+				local secs, frac = math.modf(cdelta)
+				tcpextend_stats.delta[pkt_no] = NSTime(secs, math.modf(frac * 10^9))
 				-- set current, and then calculate new bytes since last push
 				cbsp = tcpextend_stats.client_bsp[tcp_stream] + tcp_len
 				sbsp = tcpextend_stats.server_bsp[tcp_stream]
@@ -128,6 +149,7 @@ function TCPextend_proto.dissector(extend,pinfo,tree)
 				ctxb = tcpextend_stats.server_win[tcp_stream] - (tcpextend_stats.client_len[tcp_stream] - tcpextend_stats.server_ack[tcp_stream] + 1)
 				stxb = tcpextend_stats.client_win[tcp_stream] - (tcpextend_stats.server_len[tcp_stream] - tcpextend_stats.client_ack[tcp_stream] + 1)
 				-- set/calculate new persistent values
+				tcpextend_stats.client_time[tcp_stream] = frame_time
 				tcpextend_stats.client_len[tcp_stream] = tcpextend_stats.client_len[tcp_stream] + tcp_len
 				tcpextend_stats.client_ack[tcp_stream] = tcp_ack
 				tcpextend_stats.client_win[tcp_stream] = tcp_win
@@ -159,6 +181,7 @@ function TCPextend_proto.dissector(extend,pinfo,tree)
 
 		-- packet processed, output to tree
 		local subtree = tree:add(TCPextend_proto,"TCP extended info")
+		subtree:add(delta_F,tcpextend_stats.delta[pkt_no]):set_generated()
 		subtree:add(bsp_F,tcpextend_stats.bsp[pkt_no]):set_generated()
 		subtree:add(bif_F,tcpextend_stats.bif[pkt_no]):set_generated()
 		subtree:add(max_tx_F,tcpextend_stats.txb[pkt_no]):set_generated()
