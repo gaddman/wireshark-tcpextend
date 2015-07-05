@@ -26,4 +26,3 @@ Tested on Wireshark 1.12.5 under Windows 8.1. It may work with other OS and vers
 
 ## Known limitiations:
 * Any TCP errors (eg retransmissions, OOO) are not correctly handled.
-* When the columns in Wireshark are changed in any way (added/removed/renamed), the calculations may get stuffed up, in which case you'll need to restart Wireshark.
