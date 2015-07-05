@@ -13,7 +13,7 @@
 --
 -- Chris Gadd
 -- https://github.com/gaddman/wireshark-tcpextend
--- v0.6-20150705
+-- v0.7-20150706
 --
 -- Known limitiations:
 -- Any TCP errors (eg retransmissions, OOO) are not correctly handled
@@ -39,11 +39,13 @@ local F_pba = ProtoField.int32("TCPextend.pba","Packets before ACK")
 local F_delta = ProtoField.relative_time("TCPextend.delta","Time delta")
 -- add the fields to the protocol
 p_TCPextend.fields = {F_bif, F_max_tx, F_bsp, F_pba, F_delta}
+-- variables to persist across all packets
+local tcpextend_stats = {}
 
 local function reset_stats()
-	-- variables to persist across all packets
-	tcpextend_stats = {}
-	-- per stream
+	-- clear stats for a new dissection
+	tcpextend_stats = {}	-- declared already outside this function
+	-- define/clear variables per stream
 	tcpextend_stats.client_time = {}
 	tcpextend_stats.server_time = {}
 	tcpextend_stats.client_port = {}
@@ -56,7 +58,7 @@ local function reset_stats()
 	tcpextend_stats.server_ack = {}
 	tcpextend_stats.client_len = {}
 	tcpextend_stats.server_len = {}
-	-- per packet
+	-- define/clear variables per stream
 	tcpextend_stats.bif = {}
 	tcpextend_stats.bsp = {}
 	tcpextend_stats.txb = {}
@@ -74,7 +76,7 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 	local tcp_len = f_tcp_len()
 	if tcp_len then    -- seems like it should filter out TCP traffic. Maybe there's a way like taps to register the dissector with a filter?
 		tcp_len = tcp_len.value
-		local pkt_no = tostring(pinfo.number) -- warning, this will become a large array (of 32bit integers) if lots of packets
+		local pkt_no = pinfo.number -- warning, this will become a large array (of 32bit integers) if lots of packets
 		local frame_time = pinfo.rel_ts
 		local tcp_stream = f_tcp_stream().value
 		local tcp_ack = f_tcp_ack().value
