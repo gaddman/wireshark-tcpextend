@@ -1,19 +1,20 @@
 -- A Wireshark LUA script to display some additional TCP information.
 -- This is a post-dissector script which adds a new tree to the Wireshark view, _TCP extended info_.
 --
--- All statistics, except delta, are referenced to a single node, usually the sender, and displayed on both sent and received packets.
+-- All statistics, except ACK related (delta & ack_sz), are referenced to a single node, usually the sender, and displayed on both sent and received packets.
 -- bif:		bytes in flight. This will normally equal the built-in tcp.analysis.bytes_in_flight, however it is 
---			also displayed on the ACK packets.
+-- 			also displayed on the ACK packets.
 -- max_tx:	maximum size packet the server can send, equal to the client's receive window minus the server's bytes in flight.
 -- bsp:		bytes sent since the last push flag.
 -- pba:		number of packets between this ACK and the packet it ACKs (equal to the builtin frame.number minus tcp.analysis.acks_frame)
---			TODO: this should be count of how many data packets were received, it is currently everything, even non-TCP.
+-- 			TODO: this should be count of how many data packets were received, it is currently everything, even non-TCP.
 -- delta:	time since the previous packet was transmitted. Unlike the builtin time delta which is relative to the previous displayed packet,
 --			this is relative to the previous packet from the matching sender.
+-- ack_sz:	size of segment (TCP len) this ACK is ACKing
 --
 -- Chris Gadd
 -- https://github.com/gaddman/wireshark-tcpextend
--- v0.7-20150706
+-- v0.8-20150727
 --
 -- Known limitiations:
 -- Any TCP errors (eg retransmissions, OOO) are not correctly handled
@@ -37,8 +38,9 @@ local F_max_tx = ProtoField.int32("TCPextend.max_tx","Max tx bytes")
 local F_bsp = ProtoField.int32("TCPextend.bsp","Bytes since PSH")
 local F_pba = ProtoField.int32("TCPextend.pba","Packets before ACK")
 local F_delta = ProtoField.relative_time("TCPextend.delta","Time delta")
+local F_ack_sz = ProtoField.int32("TCPextend.ack_sz","Size of segment ACKd")
 -- add the fields to the protocol
-p_TCPextend.fields = {F_bif, F_max_tx, F_bsp, F_pba, F_delta}
+p_TCPextend.fields = {F_bif, F_max_tx, F_bsp, F_pba, F_ack_sz, F_delta}
 -- variables to persist across all packets
 local tcpextend_stats = {}
 
@@ -64,6 +66,7 @@ local function reset_stats()
 	tcpextend_stats.txb = {}
 	tcpextend_stats.pba = {}
 	tcpextend_stats.delta = {}
+	tcpextend_stats.acksz = {}
 end
 
 function p_TCPextend.init()
@@ -112,6 +115,8 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 			local stxb = 0
 			local cdelta = 0
 			local sdelta = 0
+			local cacksz = 0
+			local sacksz = 0
 			
 			-- calculate depending on which direction this packet is going
 			if tcp_srcport == tcpextend_stats.server_port[tcp_stream] then
@@ -128,6 +133,8 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 				else
 					tcpextend_stats.server_bsp[tcp_stream] = tcpextend_stats.server_bsp[tcp_stream] + tcp_len
 				end
+                -- acksz = current ACK - previous ACK
+                tcpextend_stats.acksz[pkt_no] = tcp_ack - tcpextend_stats.server_ack[tcp_stream]
 				-- txb = receive window - _current_ BiF
 				stxb = tcpextend_stats.client_win[tcp_stream] - (tcpextend_stats.server_len[tcp_stream] - tcpextend_stats.client_ack[tcp_stream] + 1)
 				ctxb = tcpextend_stats.server_win[tcp_stream] - (tcpextend_stats.client_len[tcp_stream] - tcpextend_stats.server_ack[tcp_stream] + 1)
@@ -150,6 +157,8 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 				else
 					tcpextend_stats.client_bsp[tcp_stream] = tcpextend_stats.client_bsp[tcp_stream] + tcp_len
 				end
+                -- acksz = current ACK - previous ACK
+                tcpextend_stats.acksz[pkt_no] = tcp_ack - tcpextend_stats.client_ack[tcp_stream]
 				-- txb = receive window - _current_ BiF
 				ctxb = tcpextend_stats.server_win[tcp_stream] - (tcpextend_stats.client_len[tcp_stream] - tcpextend_stats.server_ack[tcp_stream] + 1)
 				stxb = tcpextend_stats.client_win[tcp_stream] - (tcpextend_stats.server_len[tcp_stream] - tcpextend_stats.client_ack[tcp_stream] + 1)
@@ -164,7 +173,7 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 			cbif = tcpextend_stats.client_len[tcp_stream] - tcpextend_stats.server_ack[tcp_stream] + 1
 			sbif = tcpextend_stats.server_len[tcp_stream] - tcpextend_stats.client_ack[tcp_stream] + 1
 			
-			-- try to guess which node is the sender, and display stats based on that
+			-- try to guess which node is the sender, and display some stats based on that
 			-- the '=' comparison in case they're both 0 favours download traffic
 			if sbif >= cbif then
 				-- server is sending data in this stream
@@ -178,9 +187,9 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 				tcpextend_stats.txb[pkt_no] = ctxb
 			end
 			
-			if tcp_ack then
-				tcpextend_stats.pba[pkt_no] = pkt_no - f_tcp_ack_frm().value
-			end
+            -- f_tcp_ack_frm not always available, even if an ACK. If so then pba will be null and not added to the tree
+			-- TODO: calculate from SEQ/ACK instead of using Wireshark's builtin tcp.analysis.acks_frame
+			tcpextend_stats.pba[pkt_no] = pkt_no - f_tcp_ack_frm().value
 
 		end	-- if packet not visited
 
@@ -192,6 +201,9 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 		subtree:add(F_max_tx,tcpextend_stats.txb[pkt_no]):set_generated()
 		if tcpextend_stats.pba[pkt_no] then
 			subtree:add(F_pba,tcpextend_stats.pba[pkt_no]):set_generated()
+		end
+		if tcp_ack then
+			subtree:add(F_ack_sz,tcpextend_stats.acksz[pkt_no]):set_generated()
 		end
 	end	-- if a TCP packet
 end
