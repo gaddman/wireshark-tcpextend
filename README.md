@@ -10,6 +10,7 @@ All statistics, except delta and ack_sz, are referenced to the sending node, and
 * **pba**: number of packets between this ACK and the packet it ACKs (equal to the builtin `frame.number` minus `tcp.analysis.acks_frame`). TODO: this should be count of how many data packets were received, it is currently everything, even non-TCP.
 * **delta**: time since the previous packet was transmitted. Unlike the builtin time delta which is relative to the previous displayed packet, this is relative to the previous packet from the matching sender.
 * **ack_sz**: size of the segment(s) this ACK is ACKing.
+* **ip_inc**: incremental value of the IP ID field, ie how much bigger (or smaller) than the previous packet. Useful for spotting out of order packets in situations where the IP ID increments by 1 each packet. If Large Segment Offload is running on the server then expect to see frequent large negative values.
 
 ## Usage:
 Copy to your Wireshark plugins folder, on Windows 8 and later this is `C:\Users\<username>\AppData\Roaming\Wireshark\plugins`. You may need to create the folder first.
