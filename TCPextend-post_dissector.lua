@@ -11,10 +11,13 @@
 -- delta:	time since the previous packet was transmitted. Unlike the builtin time delta which is relative to the previous displayed packet,
 --			this is relative to the previous packet from the matching sender.
 -- ack_sz:	size of segment (TCP len) this ACK is ACKing
+-- ip_inc:	Incremental value of the IP ID field, ie how much bigger (or smaller) than the previous packet. Useful for spotting out of order packets
+--			in situations where the IP ID increments by 1 each packet. If Large Segment Offload is running on the server then expect to see frequent
+--			large negative values.
 --
 -- Chris Gadd
 -- https://github.com/gaddman/wireshark-tcpextend
--- v0.8-20150727
+-- v0.9-20150824
 --
 -- Known limitiations:
 -- Any TCP errors (eg retransmissions, OOO) are not correctly handled
@@ -29,6 +32,7 @@ local f_tcp_win = Field.new("tcp.window_size")
 local f_tcp_src = Field.new("tcp.srcport")
 local f_tcp_dst = Field.new("tcp.dstport")
 local f_tcp_ack_frm = Field.new("tcp.analysis.acks_frame")
+local f_ip_id = Field.new("ip.id")
 
 -- declare (pseudo) protocol
 local p_TCPextend = Proto("TCPextend","Extended TCP information")
@@ -39,8 +43,9 @@ local F_bsp = ProtoField.int32("TCPextend.bsp","Bytes since PSH")
 local F_pba = ProtoField.int32("TCPextend.pba","Packets before ACK")
 local F_delta = ProtoField.relative_time("TCPextend.delta","Time delta")
 local F_ack_sz = ProtoField.int32("TCPextend.ack_sz","Size of segment ACKd")
+local F_ip_inc = ProtoField.int32("TCPextend.ip_inc","IP ID increment")
 -- add the fields to the protocol
-p_TCPextend.fields = {F_bif, F_max_tx, F_bsp, F_pba, F_ack_sz, F_delta}
+p_TCPextend.fields = {F_bif, F_max_tx, F_bsp, F_pba, F_ack_sz, F_delta, F_ip_inc}
 -- variables to persist across all packets
 local tcpextend_stats = {}
 
@@ -60,6 +65,8 @@ local function reset_stats()
 	tcpextend_stats.server_ack = {}
 	tcpextend_stats.client_len = {}
 	tcpextend_stats.server_len = {}
+	tcpextend_stats.client_id = {}
+	tcpextend_stats.server_id = {}
 	-- define/clear variables per stream
 	tcpextend_stats.bif = {}
 	tcpextend_stats.bsp = {}
@@ -67,6 +74,7 @@ local function reset_stats()
 	tcpextend_stats.pba = {}
 	tcpextend_stats.delta = {}
 	tcpextend_stats.acksz = {}
+	tcpextend_stats.ipinc = {}
 end
 
 function p_TCPextend.init()
@@ -88,6 +96,7 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 		local tcp_seq = f_tcp_seq().value
 		local tcp_srcport = f_tcp_src().value
 		local tcp_dstport = f_tcp_dst().value
+		local ip_id = f_ip_id().value
 
 		if not pinfo.visited then
 	
@@ -103,6 +112,8 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 				tcpextend_stats.server_ack[tcp_stream] = 0
 				tcpextend_stats.client_len[tcp_stream] = 0
 				tcpextend_stats.server_len[tcp_stream] = 0
+				tcpextend_stats.client_id[tcp_stream] = 0
+				tcpextend_stats.server_id[tcp_stream] = 0
 				tcpextend_stats.client_time[tcp_stream] = 0
 				tcpextend_stats.server_time[tcp_stream] = 0
 			end
@@ -138,11 +149,17 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 				-- txb = receive window - _current_ BiF
 				stxb = tcpextend_stats.client_win[tcp_stream] - (tcpextend_stats.server_len[tcp_stream] - tcpextend_stats.client_ack[tcp_stream] + 1)
 				ctxb = tcpextend_stats.server_win[tcp_stream] - (tcpextend_stats.client_len[tcp_stream] - tcpextend_stats.server_ack[tcp_stream] + 1)
+                -- ipinc = how much bigger is this IP ID than previous packet
+				if tcpextend_stats.server_id[tcp_stream]>0 then
+					-- not the first packet
+					tcpextend_stats.ipinc[pkt_no] = ip_id - tcpextend_stats.server_id[tcp_stream]
+				end
 				-- set/calculate new persistent values
 				tcpextend_stats.server_time[tcp_stream] = frame_time
 				tcpextend_stats.server_len[tcp_stream] = tcpextend_stats.server_len[tcp_stream] + tcp_len
 				tcpextend_stats.server_ack[tcp_stream] = tcp_ack
 				tcpextend_stats.server_win[tcp_stream] = tcp_win
+				tcpextend_stats.server_id[tcp_stream] = ip_id
 			elseif tcp_srcport == tcpextend_stats.client_port[tcp_stream] then
 				-- from client
 				-- calculate time since last packet from this endpoint, and store as NStime (seconds,nanoseconds)
@@ -162,11 +179,17 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 				-- txb = receive window - _current_ BiF
 				ctxb = tcpextend_stats.server_win[tcp_stream] - (tcpextend_stats.client_len[tcp_stream] - tcpextend_stats.server_ack[tcp_stream] + 1)
 				stxb = tcpextend_stats.client_win[tcp_stream] - (tcpextend_stats.server_len[tcp_stream] - tcpextend_stats.client_ack[tcp_stream] + 1)
+                -- ipinc = how much bigger is this IP ID than previous packet
+				if tcpextend_stats.client_id[tcp_stream]>0 then
+					-- not the first packet
+					tcpextend_stats.ipinc[pkt_no] = ip_id - tcpextend_stats.client_id[tcp_stream]
+				end
 				-- set/calculate new persistent values
 				tcpextend_stats.client_time[tcp_stream] = frame_time
 				tcpextend_stats.client_len[tcp_stream] = tcpextend_stats.client_len[tcp_stream] + tcp_len
 				tcpextend_stats.client_ack[tcp_stream] = tcp_ack
 				tcpextend_stats.client_win[tcp_stream] = tcp_win
+				tcpextend_stats.client_id[tcp_stream] = ip_id
 			end			
 			
 			-- calculate new bytes in flight
@@ -204,6 +227,12 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 		end
 		if tcp_ack then
 			subtree:add(F_ack_sz,tcpextend_stats.acksz[pkt_no]):set_generated()
+		end
+		if tcpextend_stats.ipinc[pkt_no] then
+			ip_id = subtree:add(F_ip_inc,tcpextend_stats.ipinc[pkt_no]):set_generated()
+			if (tcpextend_stats.ipinc[pkt_no]>1) or (tcpextend_stats.ipinc[pkt_no]<0) then -- this may be a bad assumption
+				ip_id:add_expert_info(PI_SEQUENCE,PI_WARN,"This packet may be out of order")
+			end
 		end
 	end	-- if a TCP packet
 end
