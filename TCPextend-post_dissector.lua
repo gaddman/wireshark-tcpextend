@@ -17,12 +17,12 @@
 --
 -- Chris Gadd
 -- https://github.com/gaddman/wireshark-tcpextend
--- v1.0-20150825
+-- v1.1-20150826
 --
 -- Known limitiations:
--- Any TCP errors (eg retransmissions, OOO) may not be correctly handled
+-- PBA counts all packets, not just TCP packets
 
--- declare some Fields to be read
+-- declare some fields to be read
 local f_tcp_len = Field.new("tcp.len")
 local f_tcp_ack = Field.new("tcp.ack")
 local f_tcp_push = Field.new("tcp.flags.push")
@@ -63,10 +63,10 @@ local function reset_stats()
 	tcpextend_stats.server_bsp = {}
 	tcpextend_stats.client_pseq = {}	-- sequence number at last push flag (at end of packet, ie tcp.seq + tcp.len - 1)
 	tcpextend_stats.server_pseq = {}
-	tcpextend_stats.client_ack = {}		-- ACK value
+	tcpextend_stats.client_ack = {}		-- last ACK value
 	tcpextend_stats.server_ack = {}
-	tcpextend_stats.client_len = {}		-- TCP len
-	tcpextend_stats.server_len = {}
+	tcpextend_stats.client_seq = {}		-- last SEQ value (actually SEQ+LEN-1)
+	tcpextend_stats.server_seq = {}
 	tcpextend_stats.client_id = {}		-- IP id
 	tcpextend_stats.server_id = {}
 	-- define/clear variables per stream
@@ -93,9 +93,9 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 		local frame_time = pinfo.rel_ts
 		local tcp_stream = f_tcp_stream().value
 		local tcp_ack = f_tcp_ack().value
+		local tcp_lseq = f_tcp_seq().value + tcp_len - 1
 		local tcp_push = f_tcp_push().value
 		local tcp_win = f_tcp_win().value
-		local tcp_seq = f_tcp_seq().value
 		local tcp_srcport = f_tcp_src().value
 		local tcp_dstport = f_tcp_dst().value
 		local ip_id = f_ip_id().value
@@ -114,8 +114,8 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 				tcpextend_stats.server_pseq[tcp_stream] = 0
 				tcpextend_stats.client_ack[tcp_stream] = 0
 				tcpextend_stats.server_ack[tcp_stream] = 0
-				tcpextend_stats.client_len[tcp_stream] = 0
-				tcpextend_stats.server_len[tcp_stream] = 0
+				tcpextend_stats.client_seq[tcp_stream] = 0
+				tcpextend_stats.server_seq[tcp_stream] = 0
 				tcpextend_stats.client_id[tcp_stream] = 0
 				tcpextend_stats.server_id[tcp_stream] = 0
 				tcpextend_stats.client_time[tcp_stream] = 0
@@ -141,20 +141,20 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 				local secs, frac = math.modf(sdelta)
 				tcpextend_stats.delta[pkt_no] = NSTime(secs, math.modf(frac * 10^9))
 				-- set current, and then calculate new bytes since last push
-				sbsp = tcp_seq - tcpextend_stats.server_pseq[tcp_stream] + tcp_len - 1
+				sbsp = tcp_lseq - tcpextend_stats.server_pseq[tcp_stream]
 				cbsp = tcpextend_stats.client_bsp[tcp_stream]
 				if tcp_push == true then
 					tcpextend_stats.server_bsp[tcp_stream] = 0
-					tcpextend_stats.server_pseq[tcp_stream] = tcp_seq + tcp_len - 1
+					tcpextend_stats.server_pseq[tcp_stream] = tcp_lseq
 				else
 					-- rather than just add the length, calculate from seq in case we have OOO or retransmitted pkts
-					tcpextend_stats.server_bsp[tcp_stream] = tcp_seq - tcpextend_stats.server_pseq[tcp_stream] + tcp_len - 1
+					tcpextend_stats.server_bsp[tcp_stream] = tcp_lseq - tcpextend_stats.server_pseq[tcp_stream]
 				end
                 -- acksz = current ACK - previous ACK
                 tcpextend_stats.acksz[pkt_no] = tcp_ack - tcpextend_stats.server_ack[tcp_stream]
 				-- txb = receive window - _current_ BiF
-				stxb = tcpextend_stats.client_win[tcp_stream] - (tcpextend_stats.server_len[tcp_stream] - tcpextend_stats.client_ack[tcp_stream] + 1)
-				ctxb = tcpextend_stats.server_win[tcp_stream] - (tcpextend_stats.client_len[tcp_stream] - tcpextend_stats.server_ack[tcp_stream] + 1)
+				stxb = tcpextend_stats.client_win[tcp_stream] - (tcpextend_stats.server_seq[tcp_stream] - tcpextend_stats.client_ack[tcp_stream] + 1)
+				ctxb = tcpextend_stats.server_win[tcp_stream] - (tcpextend_stats.client_seq[tcp_stream] - tcpextend_stats.server_ack[tcp_stream] + 1)
                 -- ipinc = how much bigger is this IP ID than previous packet
 				if tcpextend_stats.server_id[tcp_stream]>0 then
 					-- not the first packet
@@ -162,7 +162,7 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 				end
 				-- set/calculate new persistent values
 				tcpextend_stats.server_time[tcp_stream] = frame_time
-				tcpextend_stats.server_len[tcp_stream] = tcpextend_stats.server_len[tcp_stream] + tcp_len
+				tcpextend_stats.server_seq[tcp_stream] = tcp_lseq
 				tcpextend_stats.server_ack[tcp_stream] = tcp_ack
 				tcpextend_stats.server_win[tcp_stream] = tcp_win
 				tcpextend_stats.server_id[tcp_stream] = ip_id
@@ -173,20 +173,20 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 				local secs, frac = math.modf(cdelta)
 				tcpextend_stats.delta[pkt_no] = NSTime(secs, math.modf(frac * 10^9))
 				-- set current, and then calculate new bytes since last push
-				cbsp = tcp_seq - tcpextend_stats.client_pseq[tcp_stream] + tcp_len - 1
+				cbsp = tcp_lseq - tcpextend_stats.client_pseq[tcp_stream]
 				sbsp = tcpextend_stats.server_bsp[tcp_stream]
 				if tcp_push == true then
 					tcpextend_stats.client_bsp[tcp_stream] = 0
-					tcpextend_stats.client_pseq[tcp_stream] = tcp_seq + tcp_len - 1
+					tcpextend_stats.client_pseq[tcp_stream] = tcp_lseq
 				else
 					-- rather than just add the length, calculate from seq in case we have OOO or retransmitted pkts
-					tcpextend_stats.client_bsp[tcp_stream] = tcp_seq - tcpextend_stats.client_pseq[tcp_stream] + tcp_len - 1
+					tcpextend_stats.client_bsp[tcp_stream] = tcp_lseq - tcpextend_stats.client_pseq[tcp_stream]
 				end
                 -- acksz = current ACK - previous ACK
                 tcpextend_stats.acksz[pkt_no] = tcp_ack - tcpextend_stats.client_ack[tcp_stream]
 				-- txb = receive window - _current_ BiF
-				ctxb = tcpextend_stats.server_win[tcp_stream] - (tcpextend_stats.client_len[tcp_stream] - tcpextend_stats.server_ack[tcp_stream] + 1)
-				stxb = tcpextend_stats.client_win[tcp_stream] - (tcpextend_stats.server_len[tcp_stream] - tcpextend_stats.client_ack[tcp_stream] + 1)
+				ctxb = tcpextend_stats.server_win[tcp_stream] - (tcpextend_stats.client_seq[tcp_stream] - tcpextend_stats.server_ack[tcp_stream] + 1)
+				stxb = tcpextend_stats.client_win[tcp_stream] - (tcpextend_stats.server_seq[tcp_stream] - tcpextend_stats.client_ack[tcp_stream] + 1)
                 -- ipinc = how much bigger is this IP ID than previous packet
 				if tcpextend_stats.client_id[tcp_stream]>0 then
 					-- not the first packet
@@ -194,15 +194,15 @@ function p_TCPextend.dissector(extend,pinfo,tree)
 				end
 				-- set/calculate new persistent values
 				tcpextend_stats.client_time[tcp_stream] = frame_time
-				tcpextend_stats.client_len[tcp_stream] = tcpextend_stats.client_len[tcp_stream] + tcp_len
+				tcpextend_stats.client_seq[tcp_stream] = tcp_lseq
 				tcpextend_stats.client_ack[tcp_stream] = tcp_ack
 				tcpextend_stats.client_win[tcp_stream] = tcp_win
 				tcpextend_stats.client_id[tcp_stream] = ip_id
 			end			
 			
 			-- calculate new bytes in flight
-			cbif = tcpextend_stats.client_len[tcp_stream] - tcpextend_stats.server_ack[tcp_stream] + 1
-			sbif = tcpextend_stats.server_len[tcp_stream] - tcpextend_stats.client_ack[tcp_stream] + 1
+			cbif = tcpextend_stats.client_seq[tcp_stream] - tcpextend_stats.server_ack[tcp_stream] + 1
+			sbif = tcpextend_stats.server_seq[tcp_stream] - tcpextend_stats.client_ack[tcp_stream] + 1
 			
 			-- try to guess which node is the sender, and display some stats based on that
 			-- the '=' comparison in case they're both 0 favours download traffic
