@@ -18,13 +18,13 @@ Copy to your Wireshark plugins folder, on Windows 8 and later this is `C:\Users\
 Now when viewing a capture in Wireshark you'll see an extra line in the protocol list, _TCP extended info_. These can be filtered and displayed as columns, just like any native Wireshark protocol information.
 
 **Additional protocol tree:**
-![*Screenshot of additional protocol tree](https://cloud.githubusercontent.com/assets/1311209/8895529/37743090-3432-11e5-9298-24b1b30ef188.png)
+![*Screenshot of additional protocol tree](https://cloud.githubusercontent.com/assets/1311209/9489018/001b6cf4-4c32-11e5-8c1e-2444d5d148d9.png)
 
 **Additional columns (highlighted):**
-![Screenshot of additional columns](https://cloud.githubusercontent.com/assets/1311209/8146105/c0498890-127a-11e5-8f7f-003e927dac23.png)
+![Screenshot of additional columns](https://cloud.githubusercontent.com/assets/1311209/9489153/fe884e6a-4c32-11e5-858c-17efdf52c09a.png)
 
 ## Compatibility
-Tested on Wireshark 1.12.5 under Windows 8.1. It may work with other OS and versions, if it doesn't submit an issue or pull request.
+Tested on Wireshark 1.12.7 under Windows 8.1. It may work with other OS and versions, if it doesn't submit an issue or pull request.
 
 ## Known limitiations:
-* Any TCP errors (eg retransmissions, OOO) are not correctly handled.
+* PBA counts all packets, not just TCP packets
