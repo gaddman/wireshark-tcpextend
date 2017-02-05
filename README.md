@@ -19,9 +19,11 @@ Copy to your Wireshark plugins folder, on Windows 8 and later this is `C:\Users\
 Now when viewing a capture in Wireshark you'll see an extra line in the protocol list, _TCP extended info_. These can be filtered and displayed as columns, just like any native Wireshark protocol information.
 
 **Additional protocol tree:**
-![*Screenshot of additional protocol tree](https://cloud.githubusercontent.com/assets/1311209/22630851/22ee5e00-ec66-11e6-8fb1-9f7110ca52f1.png)
+
+![Screenshot of additional protocol tree](https://cloud.githubusercontent.com/assets/1311209/22630851/22ee5e00-ec66-11e6-8fb1-9f7110ca52f1.png)
 
 **Additional columns (highlighted):**
+
 ![Screenshot of additional columns](https://cloud.githubusercontent.com/assets/1311209/22630850/22e8597e-ec66-11e6-9c81-93b7d6b75742.png)
 
 ## Compatibility
