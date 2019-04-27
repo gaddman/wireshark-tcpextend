@@ -14,7 +14,11 @@ All statistics, except delta and ack_sz, are referenced to the sending node, and
 * **ip_inc**: incremental value of the IP ID field, ie how much bigger (or smaller) than the previous packet. Useful for spotting out of order packets in situations where the IP ID increments by 1 each packet. If Large Segment Offload is running on the server then expect to see frequent large negative values.
 
 ## Usage:
-Copy to your Wireshark plugins folder, on Windows 8 and later this is `C:\Users\<username>\AppData\Roaming\Wireshark\plugins`. You may need to create the folder first.
+Copy to your Wireshark plugins folder:
+* on Windows 8 and later: `C:\Users\<username>\AppData\Roaming\Wireshark\plugins`
+* on Unix-like systems: `~/.local/lib/wireshark/plugins`
+
+You may need to create the folder first. Read the [Wireshark Docs](https://www.wireshark.org/docs/wsug_html_chunked/ChPluginFolders.html) for more options, such as installing for all users.
 
 Now when viewing a capture in Wireshark you'll see an extra line in the protocol list, _TCP extended info_. These can be filtered and displayed as columns, just like any native Wireshark protocol information.
 
